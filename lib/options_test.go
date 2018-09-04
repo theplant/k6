@@ -272,6 +272,11 @@ func TestOptions(t *testing.T) {
 		assert.True(t, opts.NoVUConnectionReuse.Valid)
 		assert.True(t, opts.NoVUConnectionReuse.Bool)
 	})
+	t.Run("NoCookiesReset", func(t *testing.T) {
+		opts := Options{}.Apply(Options{NoCookiesReset: null.BoolFrom(true)})
+		assert.True(t, opts.NoCookiesReset.Valid)
+		assert.True(t, opts.NoCookiesReset.Bool)
+	})
 	t.Run("BlacklistIPs", func(t *testing.T) {
 		opts := Options{}.Apply(Options{
 			BlacklistIPs: []*net.IPNet{{
@@ -362,6 +367,12 @@ func TestOptions(t *testing.T) {
 		opts := Options{}.Apply(Options{RunTags: tags})
 		assert.Equal(t, tags, opts.RunTags)
 	})
+	t.Run("DiscardResponseBodies", func(t *testing.T) {
+		opts := Options{}.Apply(Options{DiscardResponseBodies: null.BoolFrom(true)})
+		assert.True(t, opts.DiscardResponseBodies.Valid)
+		assert.True(t, opts.DiscardResponseBodies.Bool)
+	})
+
 }
 
 func TestOptionsEnv(t *testing.T) {
@@ -427,6 +438,11 @@ func TestOptionsEnv(t *testing.T) {
 			"Hi!": null.StringFrom("Hi!"),
 		},
 		{"Throw", "K6_THROW"}: {
+			"":      null.Bool{},
+			"true":  null.BoolFrom(true),
+			"false": null.BoolFrom(false),
+		},
+		{"NoCookiesReset", "K6_NO_COOKIES_RESET"}: {
 			"":      null.Bool{},
 			"true":  null.BoolFrom(true),
 			"false": null.BoolFrom(false),
