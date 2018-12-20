@@ -1298,3 +1298,53 @@ func TestResponseTypes(t *testing.T) {
 	`))
 	assert.NoError(t, err)
 }
+
+func TestTryToBytes(t *testing.T) {
+	tests := []struct {
+		name           string
+		values         []interface{}
+		expectedBytes  []byte
+		expectedErrStr string
+	}{
+		{
+			name:          "values is nil",
+			values:        nil,
+			expectedBytes: nil,
+		},
+
+		{
+			name:          "successful",
+			values:        []interface{}{int64(1), int64(2), int64(255), int64(0)},
+			expectedBytes: []byte{1, 2, 255, 0},
+		},
+
+		{
+			name:           "element is not int64",
+			values:         []interface{}{"1", int64(2)},
+			expectedErrStr: "one element is not int64",
+		},
+
+		{
+			name:           "element is greater than 255",
+			values:         []interface{}{int64(256)},
+			expectedErrStr: "one element range is not [0, 255]",
+		},
+
+		{
+			name:           "element is less than 0",
+			values:         []interface{}{int64(-1), int64(0)},
+			expectedErrStr: "one element range is not [0, 255]",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			b, err := tryToBytes(test.values)
+			if err != nil {
+				assert.Equal(t, test.expectedErrStr, err.Error())
+			} else {
+				assert.Equal(t, test.expectedErrStr, "")
+			}
+			assert.Equal(t, test.expectedBytes, b)
+		})
+	}
+}

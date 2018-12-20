@@ -25,6 +25,7 @@ import (
 	"compress/gzip"
 	"compress/zlib"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -159,6 +160,26 @@ type parsedHTTPRequest struct {
 	tags          map[string]string
 }
 
+// If all values are int64 type and range is [0, 255], then convert to []byte.
+func tryToBytes(values []interface{}) ([]byte, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+
+	var b = make([]byte, len(values))
+	for i, val := range values {
+		int64Val, ok := val.(int64)
+		if !ok {
+			return nil, errors.New("one element is not int64")
+		}
+		if int64Val < 0 || int64Val > 255 {
+			return nil, errors.New("one element range is not [0, 255]")
+		}
+		b[i] = byte(int64Val)
+	}
+	return b, nil
+}
+
 func (h *HTTP) parseRequest(ctx context.Context, method string, reqURL URL, body interface{}, params goja.Value) (*parsedHTTPRequest, error) {
 	rt := common.GetRuntime(ctx)
 	state := common.GetState(ctx)
@@ -269,6 +290,12 @@ func (h *HTTP) parseRequest(ctx context.Context, method string, reqURL URL, body
 			result.body = bytes.NewBufferString(data)
 		case []byte:
 			result.body = bytes.NewBuffer(data)
+		case []interface{}:
+			b, err := tryToBytes(data)
+			if err != nil {
+				return nil, err
+			}
+			result.body = bytes.NewBuffer(b)
 		default:
 			return nil, fmt.Errorf("Unknown request body type %T", body)
 		}
