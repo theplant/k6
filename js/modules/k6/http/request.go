@@ -23,6 +23,7 @@ package http
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"mime/multipart"
@@ -114,6 +115,26 @@ func (h *HTTP) Request(ctx context.Context, method string, url goja.Value, args 
 		return nil, err
 	}
 	return responseFromHttpext(resp), nil
+}
+
+// If all values are int64 type and range is [0, 255], then convert to []byte.
+func tryToBytes(values []interface{}) ([]byte, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+
+	var b = make([]byte, len(values))
+	for i, val := range values {
+		int64Val, ok := val.(int64)
+		if !ok {
+			return nil, errors.New("one element is not int64")
+		}
+		if int64Val < 0 || int64Val > 255 {
+			return nil, errors.New("one element range is not [0, 255]")
+		}
+		b[i] = byte(int64Val)
+	}
+	return b, nil
 }
 
 //TODO break this function up
@@ -230,6 +251,12 @@ func (h *HTTP) parseRequest(
 			result.Body = bytes.NewBufferString(data)
 		case []byte:
 			result.Body = bytes.NewBuffer(data)
+		case []interface{}:
+			b, err := tryToBytes(data)
+			if err != nil {
+				return nil, err
+			}
+			result.Body = bytes.NewBuffer(b)
 		default:
 			return nil, fmt.Errorf("unknown request body type %T", body)
 		}
