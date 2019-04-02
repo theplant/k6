@@ -26,11 +26,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"go/build"
 	"io/ioutil"
 	stdlog "log"
 	"net"
 	"net/http"
 	"os"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -512,7 +515,7 @@ func TestVURunContext(t *testing.T) {
 
 				assert.Equal(t, vu.Runtime, common.GetRuntime(*vu.Context), "incorrect runtime in context")
 
-				state := common.GetState(*vu.Context)
+				state := lib.GetState(*vu.Context)
 				if assert.NotNil(t, state) {
 					assert.Equal(t, null.IntFrom(10), state.Options.VUs)
 					assert.Equal(t, null.BoolFrom(true), state.Options.Throw)
@@ -529,33 +532,41 @@ func TestVURunContext(t *testing.T) {
 }
 
 func TestVURunInterrupt(t *testing.T) {
+	//TODO: figure out why interrupt sometimes fails... data race in goja?
+	if runtime.GOOS == "windows" {
+		t.Skip()
+	}
+
 	r1, err := New(&lib.SourceData{
 		Filename: "/script.js",
 		Data: []byte(`
 		export default function() { while(true) {} }
 		`),
 	}, afero.NewMemMapFs(), lib.RuntimeOptions{})
-	if !assert.NoError(t, err) {
-		return
-	}
-	r1.SetOptions(lib.Options{Throw: null.BoolFrom(true)})
+	require.NoError(t, err)
+	require.NoError(t, r1.SetOptions(lib.Options{Throw: null.BoolFrom(true)}))
 
 	r2, err := NewFromArchive(r1.MakeArchive(), lib.RuntimeOptions{})
-	if !assert.NoError(t, err) {
-		return
-	}
-
+	require.NoError(t, err)
 	testdata := map[string]*Runner{"Source": r1, "Archive": r2}
 	for name, r := range testdata {
+		name, r := name, r
 		t.Run(name, func(t *testing.T) {
-			vu, err := r.newVU(make(chan stats.SampleContainer, 100))
-			if !assert.NoError(t, err) {
-				return
-			}
 			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 			defer cancel()
+			samples := make(chan stats.SampleContainer, 100)
+			defer close(samples)
+			go func() {
+				for range samples {
+				}
+			}()
+
+			vu, err := r.newVU(samples)
+			require.NoError(t, err)
+
 			err = vu.RunOnce(ctx)
-			assert.EqualError(t, err, "context cancelled at /script.js:1:1(1)")
+			assert.Error(t, err)
+			assert.True(t, strings.HasPrefix(err.Error(), "context cancelled at "))
 		})
 	}
 }
@@ -587,6 +598,7 @@ func TestVUIntegrationGroups(t *testing.T) {
 
 	testdata := map[string]*Runner{"Source": r1, "Archive": r2}
 	for name, r := range testdata {
+		r := r
 		t.Run(name, func(t *testing.T) {
 			vu, err := r.newVU(make(chan stats.SampleContainer, 100))
 			if !assert.NoError(t, err) {
@@ -598,17 +610,17 @@ func TestVUIntegrationGroups(t *testing.T) {
 			fnNestedCalled := false
 			vu.Runtime.Set("fnOuter", func() {
 				fnOuterCalled = true
-				assert.Equal(t, r.GetDefaultGroup(), common.GetState(*vu.Context).Group)
+				assert.Equal(t, r.GetDefaultGroup(), lib.GetState(*vu.Context).Group)
 			})
 			vu.Runtime.Set("fnInner", func() {
 				fnInnerCalled = true
-				g := common.GetState(*vu.Context).Group
+				g := lib.GetState(*vu.Context).Group
 				assert.Equal(t, "my group", g.Name)
 				assert.Equal(t, r.GetDefaultGroup(), g.Parent)
 			})
 			vu.Runtime.Set("fnNested", func() {
 				fnNestedCalled = true
-				g := common.GetState(*vu.Context).Group
+				g := lib.GetState(*vu.Context).Group
 				assert.Equal(t, "nested group", g.Name)
 				assert.Equal(t, "my group", g.Parent.Name)
 				assert.Equal(t, r.GetDefaultGroup(), g.Parent.Parent)
@@ -824,6 +836,13 @@ func TestVUIntegrationHosts(t *testing.T) {
 }
 
 func TestVUIntegrationTLSConfig(t *testing.T) {
+	var unsupportedVersionErrorMsg = "remote error: tls: handshake failure"
+	for _, tag := range build.Default.ReleaseTags {
+		if tag == "go1.12" {
+			unsupportedVersionErrorMsg = "tls: no supported versions satisfy MinVersion and MaxVersion"
+			break
+		}
+	}
 	testdata := map[string]struct {
 		opts   lib.Options
 		errMsg string
@@ -850,7 +869,7 @@ func TestVUIntegrationTLSConfig(t *testing.T) {
 		},
 		"UnsupportedVersion": {
 			lib.Options{TLSVersion: &lib.TLSVersions{Min: tls.VersionSSL30, Max: tls.VersionSSL30}},
-			"GoError: Get https://sha256.badssl.com/: remote error: tls: handshake failure",
+			"GoError: Get https://sha256.badssl.com/: " + unsupportedVersionErrorMsg,
 		},
 	}
 	for name, data := range testdata {

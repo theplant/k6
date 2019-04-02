@@ -1,7 +1,7 @@
 /*
  *
  * k6 - a next-generation load testing tool
- * Copyright (C) 2016 Load Impact
+ * Copyright (C) 2019 Load Impact
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as
@@ -18,34 +18,29 @@
  *
  */
 
-package netext
+package common
 
 import (
-	"context"
-	"net/http/httptrace"
+	"time"
+
+	"github.com/loadimpact/k6/stats"
 )
 
-type ctxKey int
-
-const (
-	ctxKeyTracer ctxKey = iota
-	ctxKeyAuth
-)
-
-func WithTracer(ctx context.Context, tracer *Tracer) context.Context {
-	ctx = httptrace.WithClientTrace(ctx, tracer.Trace())
-	ctx = context.WithValue(ctx, ctxKeyTracer, tracer)
-	return ctx
+// Sample defines a sample type
+type Sample struct {
+	Type   stats.MetricType  `json:"type"`
+	Metric string            `json:"metric"`
+	Time   time.Time         `json:"time"`
+	Value  float64           `json:"value"`
+	Tags   map[string]string `json:"tags,omitempty"`
 }
 
-func WithAuth(ctx context.Context, auth string) context.Context {
-	return context.WithValue(ctx, ctxKeyAuth, auth)
-}
-
-func GetAuth(ctx context.Context) string {
-	v := ctx.Value(ctxKeyAuth)
-	if v == nil {
-		return ""
+func generateDataPoint(sample stats.Sample) *Sample {
+	return &Sample{
+		Type:   sample.Metric.Type,
+		Metric: sample.Metric.Name,
+		Time:   sample.Time,
+		Value:  sample.Value,
+		Tags:   sample.Tags.CloneTags(),
 	}
-	return v.(string)
 }

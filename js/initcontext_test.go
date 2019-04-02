@@ -109,8 +109,9 @@ func TestInitContextRequire(t *testing.T) {
 
 	t.Run("Files", func(t *testing.T) {
 		t.Run("Nonexistent", func(t *testing.T) {
+			path := filepath.FromSlash("/nonexistent.js")
 			_, err := getSimpleBundle("/script.js", `import "/nonexistent.js"; export default function() {}`)
-			assert.EqualError(t, err, "GoError: open /nonexistent.js: file does not exist")
+			assert.EqualError(t, err, fmt.Sprintf("GoError: open %s: file does not exist", path))
 		})
 		t.Run("Invalid", func(t *testing.T) {
 			fs := afero.NewMemMapFs()
@@ -322,12 +323,12 @@ func TestInitContextOpen(t *testing.T) {
 
 	t.Run("Nonexistent", func(t *testing.T) {
 		fs := afero.NewMemMapFs()
-
+		path := filepath.FromSlash("/nonexistent.txt")
 		_, err := NewBundle(&lib.SourceData{
 			Filename: "/script.js",
 			Data:     []byte(`open("/nonexistent.txt"); export default function() {}`),
 		}, fs, lib.RuntimeOptions{})
-		assert.EqualError(t, err, "GoError: open /nonexistent.txt: file does not exist")
+		assert.EqualError(t, err, fmt.Sprintf("GoError: open %s: file does not exist", path))
 	})
 
 }
@@ -389,7 +390,7 @@ func TestRequestWithBinaryFile(t *testing.T) {
 	logger.Level = log.DebugLevel
 	logger.Out = ioutil.Discard
 
-	state := &common.State{
+	state := &lib.State{
 		Options: lib.Options{},
 		Logger:  logger,
 		Group:   root,
@@ -405,7 +406,7 @@ func TestRequestWithBinaryFile(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	ctx = common.WithState(ctx, state)
+	ctx = lib.WithState(ctx, state)
 	ctx = common.WithRuntime(ctx, bi.Runtime)
 	*bi.Context = ctx
 

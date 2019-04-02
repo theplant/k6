@@ -38,16 +38,16 @@ import (
 )
 
 var volumeRE = regexp.MustCompile(`^([a-zA-Z]):(.*)`)
-var sharedRE = regexp.MustCompile(`^//([^/]+)`) // matches a shared folder in Windows after backslack replacement. i.e //VMBOXSVR/k6/script.js
+var sharedRE = regexp.MustCompile(`^\\\\([^\\]+)`) // matches a shared folder in Windows before backslack replacement. i.e \\VMBOXSVR\k6\script.js
 var homeDirRE = regexp.MustCompile(`^(/[a-zA-Z])?/(Users|home|Documents and Settings)/(?:[^/]+)`)
 
-// Normalizes (to use a / path separator) and anonymizes a file path, by scrubbing usernames from home directories.
+// NormalizeAndAnonymizePath Normalizes (to use a / path separator) and anonymizes a file path, by scrubbing usernames from home directories.
 func NormalizeAndAnonymizePath(path string) string {
 	path = filepath.Clean(path)
 
 	p := volumeRE.ReplaceAllString(path, `/$1$2`)
-	p = strings.Replace(p, "\\", "/", -1)
 	p = sharedRE.ReplaceAllString(p, `/nobody`)
+	p = strings.Replace(p, "\\", "/", -1)
 	return homeDirRE.ReplaceAllString(p, `$1/$2/nobody`)
 }
 
@@ -61,6 +61,10 @@ func (m *normalizedFS) Open(name string) (afero.File, error) {
 
 func (m *normalizedFS) OpenFile(name string, flag int, mode os.FileMode) (afero.File, error) {
 	return m.Fs.OpenFile(NormalizeAndAnonymizePath(name), flag, mode)
+}
+
+func (m *normalizedFS) Stat(name string) (os.FileInfo, error) {
+	return m.Fs.Stat(NormalizeAndAnonymizePath(name))
 }
 
 // An Archive is a rollup of all resources and options needed to reproduce a test identically elsewhere.

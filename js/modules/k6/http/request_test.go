@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -96,7 +97,9 @@ func assertRequestMetricsEmitted(t *testing.T, sampleContainers []stats.SampleCo
 	assert.True(t, seenReceiving, "url %s didn't emit Receiving", url)
 }
 
-func newRuntime(t *testing.T) (*testutils.HTTPMultiBin, *common.State, chan stats.SampleContainer, *goja.Runtime, *context.Context) {
+func newRuntime(
+	t *testing.T,
+) (*testutils.HTTPMultiBin, *lib.State, chan stats.SampleContainer, *goja.Runtime, *context.Context) {
 	tb := testutils.NewHTTPMultiBin(t)
 
 	root, err := lib.NewGroup("", nil)
@@ -117,7 +120,7 @@ func newRuntime(t *testing.T) (*testutils.HTTPMultiBin, *common.State, chan stat
 	}
 	samples := make(chan stats.SampleContainer, 1000)
 
-	state := &common.State{
+	state := &lib.State{
 		Options:   options,
 		Logger:    logger,
 		Group:     root,
@@ -129,7 +132,7 @@ func newRuntime(t *testing.T) (*testutils.HTTPMultiBin, *common.State, chan stat
 
 	ctx := new(context.Context)
 	*ctx = context.Background()
-	*ctx = common.WithState(*ctx, state)
+	*ctx = lib.WithState(*ctx, state)
 	*ctx = common.WithRuntime(*ctx, rt)
 	rt.Set("http", common.Bind(rt, New(), ctx))
 
@@ -137,6 +140,9 @@ func newRuntime(t *testing.T) (*testutils.HTTPMultiBin, *common.State, chan stat
 }
 
 func TestRequestAndBatch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip()
+	}
 	t.Parallel()
 	tb, state, samples, rt, ctx := newRuntime(t)
 	defer tb.Cleanup()
@@ -156,7 +162,7 @@ func TestRequestAndBatch(t *testing.T) {
 
 		http.SetCookie(w, &cookie)
 
-		http.Redirect(w, r, sr("HTTPBIN_URL/get"), 301)
+		http.Redirect(w, r, sr("HTTPBIN_URL/get"), http.StatusMovedPermanently)
 	}))
 
 	t.Run("Redirects", func(t *testing.T) {
@@ -345,7 +351,6 @@ func TestRequestAndBatch(t *testing.T) {
 	})
 	t.Run("HTTP/2", func(t *testing.T) {
 		stats.GetBufferedSamples(samples) // Clean up buffered samples from previous tests
-
 		_, err := common.RunString(rt, `
 		let res = http.request("GET", "https://http2.akamai.com/demo");
 		if (res.status != 200) { throw new Error("wrong status: " + res.status) }
@@ -467,6 +472,16 @@ func TestRequestAndBatch(t *testing.T) {
 				_, err = common.RunString(rt, sr(`
 				let res = http.request("GET", "HTTPBIN_URL/cookies/set?key=value", null, { redirects: 0 });
 				if (res.cookies.key[0].value != "value") { throw new Error("wrong cookie value: " + res.cookies.key[0].value); }
+				const props = ["name", "value", "domain", "path", "expires", "max_age", "secure", "http_only"];
+				let cookie = res.cookies.key[0];
+				for (let i = 0; i < props.length; i++) {
+					if (cookie[props[i]] === undefined) {
+						throw new Error("cookie property not found: " + props[i]);
+					}
+				}
+				if (Object.keys(cookie).length != props.length) {
+					throw new Error("cookie has more properties than expected: " + JSON.stringify(Object.keys(cookie)));
+				}
 				`))
 				assert.NoError(t, err)
 				assertRequestMetricsEmitted(t, stats.GetBufferedSamples(samples), "GET", sr("HTTPBIN_URL/cookies/set?key=value"), "", 302, "")
@@ -532,11 +547,11 @@ func TestRequestAndBatch(t *testing.T) {
 					`))
 					assert.NoError(t, err)
 
-					redirectUrl, err := url.Parse(sr("HTTPBIN_URL"))
+					redirectURL, err := url.Parse(sr("HTTPBIN_URL"))
 					assert.NoError(t, err)
-					require.Len(t, cookieJar.Cookies(redirectUrl), 1)
-					assert.Equal(t, "key-foo", cookieJar.Cookies(redirectUrl)[0].Name)
-					assert.Equal(t, "value-bar", cookieJar.Cookies(redirectUrl)[0].Value)
+					require.Len(t, cookieJar.Cookies(redirectURL), 1)
+					assert.Equal(t, "key-foo", cookieJar.Cookies(redirectURL)[0].Name)
+					assert.Equal(t, "value-bar", cookieJar.Cookies(redirectURL)[0].Value)
 
 					assertRequestMetricsEmitted(
 						t,
@@ -558,12 +573,12 @@ func TestRequestAndBatch(t *testing.T) {
 					`))
 					assert.NoError(t, err)
 
-					redirectUrl, err := url.Parse(sr("HTTPSBIN_URL"))
+					redirectURL, err := url.Parse(sr("HTTPSBIN_URL"))
 					assert.NoError(t, err)
 
-					require.Len(t, cookieJar.Cookies(redirectUrl), 1)
-					assert.Equal(t, "key", cookieJar.Cookies(redirectUrl)[0].Name)
-					assert.Equal(t, "value", cookieJar.Cookies(redirectUrl)[0].Value)
+					require.Len(t, cookieJar.Cookies(redirectURL), 1)
+					assert.Equal(t, "key", cookieJar.Cookies(redirectURL)[0].Name)
+					assert.Equal(t, "value", cookieJar.Cookies(redirectURL)[0].Value)
 
 					assertRequestMetricsEmitted(
 						t,
@@ -700,6 +715,7 @@ func TestRequestAndBatch(t *testing.T) {
 					_, err := common.RunString(rt, fmt.Sprintf(`
 					let res = http.request("GET", "%s", null, { auth: "digest" });
 					if (res.status != 200) { throw new Error("wrong status: " + res.status); }
+					if (res.error_code != 0) { throw new Error("wrong error code: " + res.error_code); }
 					`, url))
 					assert.NoError(t, err)
 
@@ -1141,6 +1157,10 @@ func TestSystemTags(t *testing.T) {
 
 	httpURL, err := url.Parse(tb.ServerHTTP.URL)
 	require.NoError(t, err)
+	var connectionRefusedErrorText = "connect: connection refused"
+	if runtime.GOOS == "windows" {
+		connectionRefusedErrorText = "connectex: No connection could be made because the target machine actively refused it."
+	}
 
 	testedSystemTags := []struct{ tag, code, expVal string }{
 		{"proto", httpGet, "HTTP/1.1"},
@@ -1158,7 +1178,12 @@ func TestSystemTags(t *testing.T) {
 		{
 			"error",
 			tb.Replacer.Replace(`http.get("http://127.0.0.1:56789");`),
-			tb.Replacer.Replace(`dial tcp 127.0.0.1:56789: connect: connection refused`),
+			tb.Replacer.Replace(`dial tcp 127.0.0.1:56789: ` + connectionRefusedErrorText),
+		},
+		{
+			"error_code",
+			tb.Replacer.Replace(`http.get("http://127.0.0.1:56789");`),
+			"1210",
 		},
 	}
 
@@ -1345,6 +1370,144 @@ func TestTryToBytes(t *testing.T) {
 				assert.Equal(t, test.expectedErrStr, "")
 			}
 			assert.Equal(t, test.expectedBytes, b)
+		})
+	}
+}
+
+func checkErrorCode(t testing.TB, tags *stats.SampleTags, code int, msg string) {
+	var errorMsg, ok = tags.Get("error")
+	if msg == "" {
+		assert.False(t, ok)
+	} else {
+		assert.Equal(t, msg, errorMsg)
+	}
+	errorCodeStr, ok := tags.Get("error_code")
+	if code == 0 {
+		assert.False(t, ok)
+	} else {
+		var errorCode, err = strconv.Atoi(errorCodeStr)
+		assert.NoError(t, err)
+		assert.Equal(t, code, errorCode)
+	}
+}
+
+func TestErrorCodes(t *testing.T) {
+	t.Parallel()
+	tb, state, samples, rt, _ := newRuntime(t)
+	state.Options.Throw = null.BoolFrom(false)
+	defer tb.Cleanup()
+	sr := tb.Replacer.Replace
+
+	// Handple paths with custom logic
+	tb.Mux.HandleFunc("/digest-auth/failure", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+	}))
+	tb.Mux.HandleFunc("/set-cookie-before-redirect", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookie := http.Cookie{
+			Name:   "key-foo",
+			Value:  "value-bar",
+			Path:   "/",
+			Domain: sr("HTTPBIN_DOMAIN"),
+		}
+
+		http.SetCookie(w, &cookie)
+
+		http.Redirect(w, r, sr("HTTPBIN_URL/get"), http.StatusMovedPermanently)
+	}))
+
+	tb.Mux.HandleFunc("/no-location-redirect", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(302)
+	}))
+	tb.Mux.HandleFunc("/bad-location-redirect", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", "h\t:/") // \n is forbidden
+		w.WriteHeader(302)
+	}))
+
+	var testCases = []struct {
+		name                string
+		status              int
+		moreSamples         int
+		expectedErrorCode   int
+		expectedErrorMsg    string
+		expectedScriptError string
+		script              string
+	}{
+		{
+			name:              "Unroutable",
+			expectedErrorCode: 1101,
+			expectedErrorMsg:  "lookup: no such host",
+			script:            `let res = http.request("GET", "http://sdafsgdhfjg/");`,
+		},
+
+		{
+			name:              "404",
+			status:            404,
+			expectedErrorCode: 1404,
+			script:            `let res = http.request("GET", "HTTPBIN_URL/status/404");`,
+		},
+		{
+			name:              "Unroutable redirect",
+			expectedErrorCode: 1101,
+			expectedErrorMsg:  "lookup: no such host",
+			moreSamples:       1,
+			script:            `let res = http.request("GET", "HTTPBIN_URL/redirect-to?url=http://dafsgdhfjg/");`,
+		},
+		{
+			name:                "Non location redirect",
+			expectedErrorCode:   0,
+			expectedErrorMsg:    "",
+			script:              `let res = http.request("GET", "HTTPBIN_URL/no-location-redirect");`,
+			expectedScriptError: sr(`GoError: Get HTTPBIN_URL/no-location-redirect: 302 response missing Location header`),
+		},
+		{
+			name:              "Bad location redirect",
+			expectedErrorCode: 0,
+			expectedErrorMsg:  "",
+			script:            `let res = http.request("GET", "HTTPBIN_URL/bad-location-redirect");`,
+			expectedScriptError: sr(
+				"GoError: Get HTTPBIN_URL/bad-location-redirect: failed to parse Location header" +
+					" \"h\\t:/\": parse h\t:/: net/url: invalid control character in URL"),
+		},
+		{
+			name:              "Missing protocol",
+			expectedErrorCode: 1000,
+			expectedErrorMsg:  `unsupported protocol scheme ""`,
+			script:            `let res = http.request("GET", "dafsgdhfjg/");`,
+		},
+		{
+			name:   "Too many redirects",
+			status: 302,
+			script: `
+			let res = http.get("HTTPBIN_URL/redirect/1", {redirects: 0});
+			if (res.url != "HTTPBIN_URL/redirect/1") { throw new Error("incorrect URL: " + res.url) }`,
+		},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+		// clear the Samples
+		stats.GetBufferedSamples(samples)
+		t.Run(testCase.name, func(t *testing.T) {
+			_, err := common.RunString(rt,
+				sr(testCase.script+"\n"+fmt.Sprintf(`
+			if (res.status != %d) { throw new Error("wrong status: "+ res.status);}
+			if (res.error != '%s') { throw new Error("wrong error: "+ res.error);}
+			if (res.error_code != %d) { throw new Error("wrong error_code: "+ res.error_code);}
+			`, testCase.status, testCase.expectedErrorMsg, testCase.expectedErrorCode)))
+			if testCase.expectedScriptError == "" {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				require.Equal(t, err.Error(), testCase.expectedScriptError)
+			}
+			var cs = stats.GetBufferedSamples(samples)
+			assert.Len(t, cs, 1+testCase.moreSamples)
+			for _, c := range cs[len(cs)-1:] {
+				assert.NotZero(t, len(c.GetSamples()))
+				for _, sample := range c.GetSamples() {
+					checkErrorCode(t, sample.GetTags(), testCase.expectedErrorCode, testCase.expectedErrorMsg)
+				}
+			}
 		})
 	}
 }
